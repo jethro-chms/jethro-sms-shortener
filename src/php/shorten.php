@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 require_once __DIR__ . '/SmsShortener.php';
 define('SMSSHORTENER', getenv('SMSSHORTENER') ?: 'jethroau');
-define('SMSSHORTENER_API_KEY', getenv('SMSSHORTENER_API_KEY') ?: '');
+define('JETHROAU_API_KEY', getenv('JETHROAU_API_KEY') ?: '');
 
 if ($argc < 2) { fprintf(STDERR, "Usage: php src/php/shorten.php <message> [segments]\n"); exit(1); }
 $message = $argv[1];

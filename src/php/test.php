@@ -3,18 +3,19 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * Live test of the PHP client against a deployed Worker (makes a real model
- * call). Needs SMSSHORTENER_API_KEY; SMSSHORTENER defaults to jethroau.
+ * call). Needs JETHROAU_API_KEY (with the sms-shortener consent); SMSSHORTENER
+ * defaults to jethroau.
  */
 require_once __DIR__ . '/SmsShortener.php';
 
 $opts = getopt('', ['apitoken:']);
-$apiToken = $opts['apitoken'] ?? getenv('SMSSHORTENER_API_KEY') ?: '';
+$apiToken = $opts['apitoken'] ?? getenv('JETHROAU_API_KEY') ?: '';
 
 define('SMSSHORTENER', getenv('SMSSHORTENER') ?: 'jethroau');
-define('SMSSHORTENER_API_KEY', $apiToken);
+define('JETHROAU_API_KEY', $apiToken);
 
 if ($apiToken === '') {
-	fwrite(STDERR, "Error: no API key. Set SMSSHORTENER_API_KEY env var or pass --apitoken.\n");
+	fwrite(STDERR, "Error: no API key. Set JETHROAU_API_KEY env var or pass --apitoken.\n");
 	exit(1);
 }
 

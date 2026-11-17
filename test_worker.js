@@ -1,6 +1,7 @@
 /**
  * Tests for the SMS shortener Worker, run in Node with a fake Workers AI
- * binding and KV namespace (no Cloudflare account needed):
+ * binding and a fake jethro.au account (ACCOUNT) service binding (no
+ * Cloudflare account needed):
  *
  *   node test_worker.js
  *
@@ -9,6 +10,7 @@
  */
 
 import worker, { segmentInfo, normalise, protectedTokens, shortenMessage, gsmCapacity, cutShare } from './worker.js';
+import { POLICY_VERSION } from './privacy.js';
 
 const BASE_URL = process.env.BASE_URL;
 const API_KEY = process.env.API_KEY || 'test-key';
@@ -53,15 +55,32 @@ function fakeAi(replies) {
   };
 }
 
-/** Fake KV holding one create-scoped key, stored as the URL shortener stores it. */
-async function fakeKeyStore(token) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-  const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  const data = {
-    [`tok:${hash}`]: { id: 'k1' },
-    'apikey:k1': { id: 'k1', type: 'create' },
+const PRIVACY_URL = 'https://jethro.au/sms-shortener/privacy';
+
+/**
+ * Fake ACCOUNT service binding: answers GET /api/authorize?service= as the
+ * jethro.au account Worker (the URL shortener) does.
+ *
+ * @param {Record<string, {keyId: string, consent: 'current'|'outdated'|'none'}>} keys  by token
+ */
+function fakeAccount(keys) {
+  const calls = [];
+  return {
+    calls,
+    async fetch(request) {
+      calls.push(request);
+      const url = new URL(request.url);
+      if (url.pathname !== '/api/authorize') return Response.json({ error: 'Not found' }, { status: 404 });
+      const service = url.searchParams.get('service');
+      const key = keys[(request.headers.get('Authorization') || '').replace(/^Bearer /, '')];
+      if (!key) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+      if (key.consent !== 'current') {
+        const error = key.consent === 'outdated' ? 'consent_outdated' : 'consent_required';
+        return Response.json({ error, service, privacyUrl: PRIVACY_URL }, { status: 403 });
+      }
+      return Response.json({ authorized: true, keyId: key.keyId, service });
+    },
   };
-  return { async get(key) { return data[key] ?? null; } };
 }
 
 function post(body, token = API_KEY) {
@@ -265,21 +284,69 @@ async function runUnitTests() {
   console.log('\n🧪 SMS shortener — fetch handler\n');
 
   const ai = fakeAi(['Hi %firstname%, bee Sat 8am. https://example.com/working-bee']);
-  const env = { AI: ai, API_KEY: 'bootstrap-secret', API_KEYS: await fakeKeyStore('cus_good') };
+  const account = fakeAccount({
+    cus_good: { keyId: 'k1', consent: 'current' },
+    cus_noconsent: { keyId: 'k2', consent: 'none' },
+    cus_outdated: { keyId: 'k3', consent: 'outdated' },
+  });
+  const env = { AI: ai, API_KEY: 'bootstrap-secret', ACCOUNT: account };
 
   await test('missing or unknown key → 401', async () => {
-    eq((await worker.fetch(post({ message: LONG }, 'cus_bad'), env)).status, 401);
+    const res = await worker.fetch(post({ message: LONG }, 'cus_bad'), env);
+    eq(res.status, 401);
+    eq(await res.json(), { error: 'Unauthorized' });
     const noAuth = new Request('https://example.com/api/sms-shorten', { method: 'POST', body: '{}' });
     eq((await worker.fetch(noAuth, env)).status, 401);
   });
 
-  await test('a URL-shortener create key is accepted', async () => {
+  await test('a jethro.au key with SMS shortener consent is accepted, as jethro.au decides', async () => {
     const res = await worker.fetch(post({ message: LONG }, 'cus_good'), env);
     eq(res.status, 200);
     const data = await res.json();
     eq(data.fits, true);
     eq(data.result.segments, 1);
     eq(ai.calls[0].model, '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+    const asked = account.calls.at(-1);
+    eq(asked.url, 'https://jethro.au/api/authorize?service=sms-shortener');
+    eq(asked.headers.get('Authorization'), 'Bearer cus_good');
+  });
+
+  await test('403 consent_required / consent_outdated from jethro.au is passed through, without a model call', async () => {
+    const calls = ai.calls.length;
+    for (const [token, error] of [['cus_noconsent', 'consent_required'], ['cus_outdated', 'consent_outdated']]) {
+      const res = await worker.fetch(post({ message: LONG }, token), env);
+      eq(res.status, 403, token);
+      eq(await res.json(), { error, service: 'sms-shortener', privacyUrl: PRIVACY_URL }, token);
+    }
+    eq(ai.calls.length, calls, 'model calls');
+  });
+
+  await test('the bootstrap key is accepted without asking jethro.au', async () => {
+    const asked = account.calls.length;
+    eq((await worker.fetch(post({ message: LONG }, 'bootstrap-secret'), env)).status, 200);
+    eq(account.calls.length, asked);
+  });
+
+  await test('without the ACCOUNT binding, keys are refused with 503 (fails closed)', async () => {
+    const { ACCOUNT, ...unbound } = env;
+    const res = await worker.fetch(post({ message: LONG }, 'cus_good'), unbound);
+    eq(res.status, 503);
+    assert(typeof (await res.json()).error === 'string', 'JSON error');
+  });
+
+  await test('a failing or unexpected jethro.au answer → 503', async () => {
+    const throwing = { ...env, ACCOUNT: { async fetch() { throw new Error('down'); } } };
+    eq((await worker.fetch(post({ message: LONG }, 'cus_good'), throwing)).status, 503);
+    const erroring = { ...env, ACCOUNT: { async fetch() { return Response.json({ error: 'boom' }, { status: 500 }); } } };
+    eq((await worker.fetch(post({ message: LONG }, 'cus_good'), erroring)).status, 503);
+  });
+
+  await test('the rate limiter keys on the jethro.au keyId', async () => {
+    const keys = [];
+    const counting = { ...env, RATE_LIMITER: { async limit({ key }) { keys.push(key); return { success: true }; } } };
+    await worker.fetch(post({ message: LONG }, 'cus_good'), counting);
+    await worker.fetch(post({ message: LONG }, 'bootstrap-secret'), counting);
+    eq(keys, ['k1', 'bootstrap']);
   });
 
   await test('env.MODEL overrides the model', async () => {
@@ -327,6 +394,13 @@ async function runUnitTests() {
       'Llama 3.3 Community License', 'https://developers.cloudflare.com/workers-ai/platform/data-usage/',
       'https://www.cloudflare.com/privacypolicy/', 'outside Australia',
     ]) assert(html.includes(needle), `mentions ${needle}`);
+  });
+
+  await test('the privacy page is dated by its policy version and describes the agreement record', async () => {
+    const html = await (await privacy()).text();
+    assert(POLICY_VERSION === '2026-11-18', 'POLICY_VERSION matches the jethro.au registry');
+    assert(html.includes('Last updated 18 November 2026.'), 'date');
+    assert(html.includes('records who agreed') && html.includes('DELETE /api/consents/sms-shortener'), 'agreement');
   });
 
   await test('the privacy page names the model actually configured', async () => {

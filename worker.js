@@ -9,6 +9,8 @@
  *   POST /api/sms-shorten  { message: string, segments?: number, max_cut?: number }
  *     Authorization: Bearer <key>
  *   → 200 { message, fits, attempts, target, original: SegmentInfo, result: SegmentInfo }
+ *   → 401 { error: 'Unauthorized' }; 403 { error: 'consent_required' | 'consent_outdated',
+ *     service, privacyUrl } (from jethro.au); 503 when jethro.au cannot be asked
  *   GET /sms-shortener/privacy  → the privacy page (privacy.js)
  *
  * The model (Workers AI) only proposes wording; this Worker counts segments
@@ -17,9 +19,11 @@
  * URLs and phone numbers must survive the rewrite verbatim, or the attempt is
  * rejected.
  *
- * Keys are those of the jethro.au URL shortener: the API_KEYS binding is that
- * worker's KV namespace, read here only (tok:{sha256} → apikey:{id}). The
- * bootstrap env.API_KEY secret is also accepted.
+ * Keys are jethro.au API keys, issued by the jethro.au account Worker (the
+ * URL shortener), which also records each organisation's consent to this
+ * service. Every request is checked there through the ACCOUNT service
+ * binding (GET /api/authorize?service=sms-shortener). The bootstrap
+ * env.API_KEY secret is also accepted, without asking.
  *
  * Deploy: cf deploy
  */
@@ -89,8 +93,8 @@ export default {
  * POST /api/sms-shorten — reword a message to fit in fewer segments.
  */
 async function handleShorten(request, env) {
-  const auth = await verifyApiKey(request, env);
-  if (!auth.authorized) return jsonResponse({ error: 'Unauthorized' }, 401);
+  const auth = await authorize(request, env);
+  if (auth.error) return auth.error;
 
   if (env.RATE_LIMITER) {
     const { success } = await env.RATE_LIMITER.limit({ key: auth.keyId || 'bootstrap' });
@@ -373,41 +377,57 @@ export function protectedTokens(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth: keys from the jethro.au URL shortener's KV store
+// Auth: jethro.au API keys, checked by the jethro.au account Worker
 // ---------------------------------------------------------------------------
 
+/** Service id of this Worker in the jethro.au account's registry (SERVICES). */
+const SERVICE_ID = 'sms-shortener';
+
 /**
- * Verify the Bearer token. Returns { authorized, keyId? }.
+ * May the Bearer key use this service?
  *
- * Accepts the bootstrap env.API_KEY, or any admin/create key in the API_KEYS
- * namespace (looked up O(1) by SHA-256 of the token).
+ * The bootstrap env.API_KEY is accepted directly. Any other key is checked by
+ * the jethro.au account Worker through the ACCOUNT service binding, which
+ * requires the organisation's consent to this service: its 401 and 403
+ * answers (e.g. { error: 'consent_required', service, privacyUrl }) are passed
+ * through unchanged. Fails closed with 503 when the binding is missing or
+ * gives anything else.
+ *
+ * @returns {Promise<{keyId: string|null} | {error: Response}>} keyId: the
+ *   key's id at jethro.au (null for bootstrap keys), for rate limiting
  */
-async function verifyApiKey(request, env) {
+async function authorize(request, env) {
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return { authorized: false };
+    return { error: jsonResponse({ error: 'Unauthorized' }, 401) };
   }
-  const token = authHeader.slice(7);
-
-  if (env.API_KEY && token === env.API_KEY) {
-    return { authorized: true };
+  if (env.API_KEY && authHeader.slice(7) === env.API_KEY) {
+    return { keyId: null };
   }
-  if (!env.API_KEYS) return { authorized: false };
-
-  const tokenHash = await sha256Hex(token);
-  const tokRef = await env.API_KEYS.get(`tok:${tokenHash}`, { type: 'json' });
-  if (tokRef && tokRef.id) {
-    const keyData = await env.API_KEYS.get(`apikey:${tokRef.id}`, { type: 'json' });
-    if (keyData && (keyData.type === 'admin' || keyData.type === 'create')) {
-      return { authorized: true, keyId: keyData.id };
-    }
+  const unavailable = () => ({ error: jsonResponse({ error: 'Authorization service unavailable' }, 503) });
+  if (!env.ACCOUNT) {
+    console.error('ACCOUNT service binding is missing');
+    return unavailable();
   }
-  return { authorized: false };
-}
 
-async function sha256Hex(input) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  let res, data;
+  try {
+    res = await env.ACCOUNT.fetch(new Request(`https://jethro.au/api/authorize?service=${SERVICE_ID}`, {
+      headers: { Authorization: authHeader },
+    }));
+    data = await res.json();
+  } catch (error) {
+    console.error('jethro.au authorize failed:', error);
+    return unavailable();
+  }
+  if (res.status === 200 && data?.authorized === true) {
+    return { keyId: data.keyId ?? null };
+  }
+  if ((res.status === 401 || res.status === 403) && typeof data?.error === 'string') {
+    return { error: jsonResponse(data, res.status) };
+  }
+  console.error(`jethro.au authorize answered ${res.status}:`, data);
+  return unavailable();
 }
 
 function jsonResponse(data, status = 200) {

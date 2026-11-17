@@ -8,6 +8,12 @@
  * returns rewrites that keep every %placeholder%, URL and phone number of the
  * original. Callers should still re-count with their own segment maths before
  * offering the result, since that is what they will be billed by.
+ *
+ * The API key is the installation's jethro.au key (constant JETHROAU_API_KEY),
+ * shared with the other jethro.au services. The service also needs the
+ * organisation's consent to it, recorded at jethro.au (see the jethro.au URL
+ * shortener's PHP_INTEGRATION.md); without it every call fails with
+ * "SMS shortener: API error (consent_required)" (or consent_outdated).
  */
 
 interface SmsShortener
@@ -25,7 +31,9 @@ interface SmsShortener
 	 *               result: array{encoding: string, length: int, segments: int}}
 	 *         message: the longest rewrite that fits target (a minimal edit of $message),
 	 *         else the shortest acceptable one; fits: result.segments <= target
-	 * @throws \RuntimeException on network or API errors
+	 * @throws \RuntimeException on network or API errors. The message names the API's error
+	 *         code, e.g. "SMS shortener: API error (consent_required)" when the organisation
+	 *         has not agreed to the service (HTTP 403; also consent_outdated, Unauthorized).
 	 */
 	public function shorten(string $message, ?int $segments = null, ?float $maxCut = null): array;
 }
@@ -82,7 +90,8 @@ class JethroAuSmsShortener implements SmsShortener
 }
 
 /**
- * The configured SMS shortener (memoized).
+ * The configured SMS shortener (memoized), using the installation's jethro.au
+ * API key from the JETHROAU_API_KEY constant ('' when undefined).
  *
  * @throws \RuntimeException when SMSSHORTENER is blank or not a URL
  */
@@ -97,7 +106,7 @@ function getSmsShortener(): SmsShortener
 			: 'SMSSHORTENER not configured');
 	}
 	return $shortener = new JethroAuSmsShortener(
-		apiKey: defined('SMSSHORTENER_API_KEY') ? (string) SMSSHORTENER_API_KEY : '',
+		apiKey: defined('JETHROAU_API_KEY') ? (string) JETHROAU_API_KEY : '',
 		endpoint: $config['base'] . '/api/sms-shorten',
 	);
 }

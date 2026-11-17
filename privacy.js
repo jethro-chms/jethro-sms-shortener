@@ -3,9 +3,12 @@
  *
  * Static apart from the operator, the contact address (env.PRIVACY_OPERATOR,
  * env.PRIVACY_CONTACT) and the model in use (env.MODEL), so the page always
- * names the model that actually sees the text. Jethro links to it from the
- * SMS Shortening registration form, and the jethro.au signup page and
- * magic-link email link to it for SMS shortener signups.
+ * names the model that actually sees the text. Jethro links to it when
+ * turning the SMS shortener on, and the jethro.au signup and consent pages
+ * and their magic-link emails link to it.
+ *
+ * Organisations agree to this page's terms before the service works for
+ * them, and jethro.au records the version they agreed to: see POLICY_VERSION.
  *
  * Facts about Cloudflare come from its Workers AI data-usage page
  * (https://developers.cloudflare.com/workers-ai/platform/data-usage/) and
@@ -15,8 +18,21 @@
 /** Path of the privacy page. */
 export const PRIVACY_PATH = '/sms-shortener/privacy';
 
-/** Date the page text was last changed. */
-const LAST_UPDATED = '17 November 2026';
+/**
+ * Date the page text was last changed (YYYY-MM-DD), shown as "Last updated".
+ * It is the policy version consents are recorded against, so it must equal
+ * SERVICES['sms-shortener'].policyVersion in jethro-url-shortener/worker.js:
+ * change the text, this date and that policyVersion together (and raise its
+ * minPolicyVersion too if the change is material, so organisations agree again).
+ */
+export const POLICY_VERSION = '2026-11-18';
+
+/** '2026-11-18' → '18 November 2026'. */
+function longDate(isoDate) {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${d} ${months[m - 1]} ${y}`;
+}
 
 /**
  * Who made each model, and its licence, for models this page has been
@@ -73,7 +89,7 @@ export function privacyPage(env, model) {
 </head>
 <body>
 <h1>jethro.au SMS shortener: privacy</h1>
-<p><em>Last updated ${LAST_UPDATED}.</em></p>
+<p><em>Last updated ${longDate(POLICY_VERSION)}.</em></p>
 
 <div class="summary">
 <p><strong>In short:</strong> when the SMS shortener is turned on, the text of an SMS being written in Jethro is sent to
@@ -85,8 +101,8 @@ Don't use the feature for messages containing information you would not share wi
 <h2>Who runs this service</h2>
 <p>The SMS shortener at jethro.au is operated by ${operator}. Questions, requests and complaints about privacy:
 ${contact}.</p>
-<p>It is optional. It only works once a Jethro administrator has registered an API key for it, in the
-<em>SMS Shortening</em> section of Jethro's System Configuration. Its source code is public:
+<p>It is optional. It only works once a Jethro administrator has registered your installation's jethro.au API key
+and someone has agreed, on behalf of your organisation, to the terms on this page. Its source code is public:
 <a href="https://github.com/jethro-chms/jethro-sms-shortener">github.com/jethro-chms/jethro-sms-shortener</a>.</p>
 
 <h2>What is sent, and when</h2>
@@ -131,24 +147,31 @@ through an AI gateway or cache.</p>
 <p><strong>The suggestion</strong> is returned to your Jethro site and shown to the person writing the SMS. It is only
 used if they choose <em>Use instead?</em>; the SMS is then sent by your own SMS provider, as usual.</p>
 
-<h2>Registration details</h2>
-<p>SMS shortener API keys are jethro.au API keys, shared with the jethro.au URL shortener. Registering stores the key
-(as a one-way hash), the email address or Google/GitHub account you signed in with, and your organisation's name
-as given by Jethro. Sign-in links sent by email are delivered through the email service Resend. An administrator
-can revoke the key with <em>Deregister</em> in Jethro, or by contacting us.</p>
+<h2>Registration and agreement</h2>
+<p>The SMS shortener uses your installation's jethro.au API key, which is shared with the other jethro.au services
+such as the URL shortener. Registering the key stores it (as a one-way hash), the email address and Google, GitHub or
+email account you signed in with, and your organisation's name as given by Jethro. Sign-in links sent by email are
+delivered through the email service Resend.</p>
+<p>Using the SMS shortener also requires your organisation's agreement to this page, given by someone who signs in at
+jethro.au and ticks "I agree" on the organisation's behalf. jethro.au records who agreed (their email address and
+sign-in account), when, and which version of this page (its "last updated" date). The record is kept with the API key
+until the agreement is withdrawn or the key is revoked.</p>
 
 <h2>Your choices</h2>
 <ul>
   <li>People writing SMSes can simply ignore suggestions, but the text has already been sent by then.</li>
-  <li>Administrators can turn the feature off with <em>Deregister</em> in Jethro's <em>SMS Shortening</em> settings,
-    or by clearing <code>SMSSHORTENER_API_KEY</code>.</li>
+  <li>Administrators can turn the feature off by withdrawing the organisation's agreement to it (from Jethro's System
+    Configuration, or with <code>DELETE /api/consents/sms-shortener</code> at jethro.au). The API key keeps working
+    for the other jethro.au services your organisation has agreed to.</li>
+  <li><em>Deregister</em> in Jethro revokes the jethro.au API key, with its sign-in details and record of agreements,
+    which turns off every jethro.au service. You can also ask us to do this.</li>
   <li>Organisations that send sensitive information by SMS (pastoral care, health, safeguarding) should consider
     leaving the feature off.</li>
 </ul>
 
 <h2>Changes</h2>
 <p>If this page changes, the date at the top changes too. Material changes, such as using a different AI provider,
-will be described here.</p>
+will be described here, and your organisation will be asked to agree again before the SMS shortener works for it.</p>
 </body>
 </html>`;
 }

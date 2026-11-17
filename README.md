@@ -82,14 +82,31 @@ Neurons ([pricing](https://developers.cloudflare.com/workers-ai/platform/pricing
 
 The `RATE_LIMITER` binding caps each API key at 20 requests a minute.
 
-## API keys
+## API keys and consent
 
-The Worker shares the [jethro.au URL shortener](https://github.com/jethro-chms/jethro-url-shortener)'s
-keys: its `API_KEYS` binding is that Worker's KV namespace, which this Worker
-only reads (`tok:{sha256(token)}` → `apikey:{id}`, accepting `admin` and
-`create` keys). Keys are created and revoked with the URL shortener's tooling,
-including its self-service `/signup`. The bootstrap `API_KEY` secret is also
-accepted.
+Callers use their installation's jethro.au API key, issued by the jethro.au
+account Worker, the [jethro.au URL shortener](https://github.com/jethro-chms/jethro-url-shortener).
+That Worker also records each organisation's **consent** to this service: a
+signed-in person agreeing, on the organisation's behalf, to the terms of the
+privacy page (who agreed, when, which policy version). A key works here only
+with an accepted `sms-shortener` consent.
+
+This Worker keeps no keys. For each request it asks the account Worker,
+through the `ACCOUNT` service binding,
+`GET /api/authorize?service=sms-shortener` with the caller's
+`Authorization` header, and:
+
+- on 200 `{ authorized: true, keyId }`, serves the request, rate-limited per `keyId`;
+- on 401 or 403 (`{ error: "consent_required" | "consent_outdated", service, privacyUrl }`),
+  returns that status and body unchanged, so the caller can start the consent flow;
+- when the binding is missing, fails, or answers anything else, refuses with 503
+  (fails closed).
+
+The bootstrap `API_KEY` secret is accepted directly, without asking.
+
+Keys, consents and the consent flow (`/signup?service=sms-shortener`,
+`POST /api/consents`, `DELETE /api/consents/sms-shortener`) are described in
+the URL shortener's README and `PHP_INTEGRATION.md`.
 
 ## Privacy
 
@@ -98,14 +115,22 @@ Worker serves a privacy page at `GET /sms-shortener/privacy` (`privacy.js`).
 It says what is sent and when, who sees the text (this Worker, which stores
 and logs none of it; Cloudflare Workers AI, with links to Cloudflare's
 data-usage terms and privacy policy; the model's maker, who does not receive
-it), and what registration stores. It names the operator and contact from
+it), and what registration and agreement store. It names the operator and contact from
 `PRIVACY_OPERATOR` / `PRIVACY_CONTACT`, and the model from `MODEL`. Models
 other than the default are described generically: add them to `MODELS` in
 `privacy.js` after checking Cloudflare's model catalogue.
 
-Jethro links to the page from its SMS Shortening registration form
+Organisations agree to this page before the service works for them, and
+jethro.au records which version they agreed to. `POLICY_VERSION` in
+`privacy.js` is the page's "last updated" date and must equal
+`SERVICES['sms-shortener'].policyVersion` in the URL shortener's `worker.js`:
+change the text, `POLICY_VERSION` and `policyVersion` together, and raise
+`minPolicyVersion` there as well for a material change, so that every
+organisation agrees again.
+
+Jethro links to the page when turning the service on
 (`smsShortenerConfig()['privacy']` in the PHP client), and the jethro.au
-signup page and sign-in email link to it for SMS shortener signups.
+signup and consent pages and their sign-in emails link to it.
 
 ## API
 
@@ -142,8 +167,10 @@ for UCS-2, UTF-16 code units. When no attempt fits, `fits` is false and
 |---|---|
 | 400 | Body is not JSON, `message` is empty or too long, `segments` is not a positive integer, or `max_cut` is not a number from 0 to 1 |
 | 401 | Missing or unknown API key |
+| 403 | The organisation has not agreed to this service (`consent_required`), or agreed to a superseded policy version (`consent_outdated`); the body is `{ "error", "service", "privacyUrl" }` |
 | 429 | Rate limit exceeded |
 | 502 | Workers AI call failed |
+| 503 | jethro.au could not be asked whether the key may be used |
 
 ## PHP library
 
@@ -151,7 +178,7 @@ for UCS-2, UTF-16 code units. When no attempt fits, `fits` is false and
 require 'vendor/autoload.php';   // or require 'src/php/SmsShortener.php';
 
 define('SMSSHORTENER', 'jethroau');            // optional; the default
-define('SMSSHORTENER_API_KEY', 'cus_...');
+define('JETHROAU_API_KEY', 'cus_...');         // the installation's jethro.au key, shared by all jethro.au services
 
 $r = getSmsShortener()->shorten($message);      // or ->shorten($message, segments: 1, maxCut: 1.0)
 if ($r['fits']) echo $r['message'];
@@ -160,7 +187,8 @@ if ($r['fits']) echo $r['message'];
 `SMSSHORTENER` is `jethroau` (= `https://jethro.au`, the default when
 undefined) or the base URL of a self-hosted Worker. `smsShortenerConfig()`
 interprets it. `shorten()` throws `RuntimeException` on network and API
-errors; it gives up after 12 seconds (3 seconds to connect).
+errors, naming the API's error code, e.g. `SMS shortener: API error (consent_required)`;
+it gives up after 12 seconds (3 seconds to connect).
 
 ## Quick start
 
@@ -178,10 +206,10 @@ pnpm install
 cp cloudflare.config.example.ts cloudflare.config.ts
 ```
 
-Set the route patterns and zone, `API_KEYS` to the URL shortener's KV
-namespace id, and `PRIVACY_OPERATOR` / `PRIVACY_CONTACT` to who runs the
-service and how to reach them about privacy. `cloudflare.config.ts` is
-gitignored.
+Set the route patterns and zone, and `PRIVACY_OPERATOR` / `PRIVACY_CONTACT`
+to who runs the service and how to reach them about privacy. `ACCOUNT` binds
+the jethro.au account Worker by name (`url-shortener`); it must be deployed on
+the same account. `cloudflare.config.ts` is gitignored.
 
 ### 3. Deploy with the bootstrap key
 
@@ -203,9 +231,9 @@ npx cf workers secrets update API_KEY --worker sms-shortener --type secret_text 
 ## Tests
 
 ```bash
-node test_worker.js          # offline: fake Workers AI and KV, no account needed
+node test_worker.js          # offline: fake Workers AI and jethro.au account binding, no account needed
 BASE_URL=https://jethro.au API_KEY=cus_... node test_worker.js   # live (costs Neurons)
-SMSSHORTENER_API_KEY=cus_... php src/php/test.php                 # PHP client, live
+JETHROAU_API_KEY=cus_... php src/php/test.php                    # PHP client, live
 ```
 
 For `npx cf dev`, `.dev.vars` holds local values for the secrets declared in

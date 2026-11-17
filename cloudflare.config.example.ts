@@ -18,11 +18,10 @@ export default defineConfig({
 		],
 		env: {
 			AI: bindings.ai(),
-			// The URL shortener's KV namespace: API keys are shared with it
-			// (read-only here; keys are created and revoked by the URL shortener).
-			API_KEYS: bindings.kv({
-				id: "YOUR_URL_SHORTENER_KV_NAMESPACE_ID",
-			}),
+			// The jethro.au account Worker (the URL shortener), which issues API
+			// keys and records each organisation's consent to this service; asked
+			// GET /api/authorize?service=sms-shortener for every request.
+			ACCOUNT: bindings.worker({ worker: "url-shortener" }),
 			// Per-key request cap, protecting the Workers AI Neuron budget.
 			RATE_LIMITER: bindings.rateLimit({
 				namespace: "1001",
