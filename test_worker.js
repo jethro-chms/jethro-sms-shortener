@@ -239,6 +239,34 @@ async function runUnitTests() {
     const broken = { ...env, AI: { async run() { throw new Error('boom'); } } };
     eq((await worker.fetch(post({ message: LONG }, 'cus_good'), broken)).status, 502);
   });
+
+  console.log('\n🧪 SMS shortener — privacy page\n');
+
+  const privacy = (extraEnv = {}) => worker.fetch(new Request('https://example.com/sms-shortener/privacy'), { ...env, ...extraEnv });
+
+  await test('the privacy page names the operator, contact, model maker and Cloudflare terms', async () => {
+    const res = await privacy({ PRIVACY_OPERATOR: 'Example Ops', PRIVACY_CONTACT: 'privacy@example.com' });
+    eq(res.status, 200);
+    assert(res.headers.get('Content-Type').startsWith('text/html'), 'HTML');
+    const html = await res.text();
+    for (const needle of [
+      'Example Ops', 'mailto:privacy@example.com', '@cf/meta/llama-3.3-70b-instruct-fp8-fast', 'Meta Platforms, Inc.',
+      'Llama 3.3 Community License', 'https://developers.cloudflare.com/workers-ai/platform/data-usage/',
+      'https://www.cloudflare.com/privacypolicy/', 'outside Australia',
+    ]) assert(html.includes(needle), `mentions ${needle}`);
+  });
+
+  await test('the privacy page names the model actually configured', async () => {
+    const html = await (await privacy({ MODEL: '@cf/other/model' })).text();
+    assert(html.includes('<code>@cf/other/model</code>'), 'names the configured model');
+    assert(!html.includes('Meta Platforms'), 'does not claim the default model\'s maker');
+  });
+
+  await test('operator and contact are escaped', async () => {
+    const html = await (await privacy({ PRIVACY_OPERATOR: '<b>X</b>', PRIVACY_CONTACT: 'a"b@example.com' })).text();
+    assert(!html.includes('<b>X</b>') && html.includes('&lt;b&gt;X&lt;/b&gt;'), 'operator escaped');
+    assert(html.includes('mailto:a&quot;b@example.com'), 'contact escaped');
+  });
 }
 
 async function runLiveTests() {

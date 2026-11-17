@@ -69,6 +69,22 @@ only reads (`tok:{sha256(token)}` → `apikey:{id}`, accepting `admin` and
 including its self-service `/signup`. The bootstrap `API_KEY` secret is also
 accepted.
 
+## Privacy
+
+SMS text is personal information that leaves the church's own systems, so the
+Worker serves a privacy page at `GET /sms-shortener/privacy` (`privacy.js`).
+It says what is sent and when, who sees the text (this Worker, which stores
+and logs none of it; Cloudflare Workers AI, with links to Cloudflare's
+data-usage terms and privacy policy; the model's maker, who does not receive
+it), and what registration stores. It names the operator and contact from
+`PRIVACY_OPERATOR` / `PRIVACY_CONTACT`, and the model from `MODEL`. Models
+other than the default are described generically: add them to `MODELS` in
+`privacy.js` after checking Cloudflare's model catalogue.
+
+Jethro links to the page from its SMS Shortening registration form
+(`smsShortenerConfig()['privacy']` in the PHP client), and the jethro.au
+signup page and sign-in email link to it for SMS shortener signups.
+
 ## API
 
 ### Shorten a message
@@ -138,8 +154,10 @@ pnpm install
 cp cloudflare.config.example.ts cloudflare.config.ts
 ```
 
-Set the route pattern and zone, and `API_KEYS` to the URL shortener's KV
-namespace id. `cloudflare.config.ts` is gitignored.
+Set the route patterns and zone, `API_KEYS` to the URL shortener's KV
+namespace id, and `PRIVACY_OPERATOR` / `PRIVACY_CONTACT` to who runs the
+service and how to reach them about privacy. `cloudflare.config.ts` is
+gitignored.
 
 ### 3. Deploy with the bootstrap key
 

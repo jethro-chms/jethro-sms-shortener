@@ -11,6 +11,10 @@ export default defineConfig({
 				pattern: "yourdomain.com/api/sms-shorten*",
 				zone: "yourdomain.com",
 			}),
+			triggers.fetch({
+				pattern: "yourdomain.com/sms-shortener/*",
+				zone: "yourdomain.com",
+			}),
 		],
 		env: {
 			AI: bindings.ai(),
@@ -24,6 +28,9 @@ export default defineConfig({
 				namespace: "1001",
 				simple: { limit: 20, period: 60 },
 			}),
+			// Named on the privacy page (/sms-shortener/privacy).
+			PRIVACY_OPERATOR: bindings.text("Your organisation name"),
+			PRIVACY_CONTACT: bindings.text("privacy@yourdomain.com"),
 			// Declare secrets here so `cf dev` loads their local values from
 			// .dev.vars (see README "Tests"); production values come from
 			// `cf workers secrets update`, which this does not override.

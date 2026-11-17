@@ -13,3 +13,4 @@
 /vite.config.ts      export-ignore
 /worker.js           export-ignore
 /test_worker.js      export-ignore
+/privacy.js          export-ignore

@@ -96,9 +96,11 @@ function getSmsShortener(): SmsShortener
  * when SMSSHORTENER is undefined. Any other http(s) URL names a self-hosted
  * Worker (or a test double). Blank means "not configured".
  *
- * @return array{raw: string, configured: bool, supported: bool, base: string}
+ * @return array{raw: string, configured: bool, supported: bool, base: string, privacy: string}
  *         raw: the setting as written; configured: not blank; supported: usable;
- *         base: service URL without trailing slash ('' when blank or unsupported)
+ *         base: service URL without trailing slash ('' when blank or unsupported);
+ *         privacy: the service's privacy page, which says who sees message text
+ *         ('' when unsupported). Show it to anyone deciding to turn the service on.
  */
 function smsShortenerConfig(?string $setting = null): array
 {
@@ -115,5 +117,6 @@ function smsShortenerConfig(?string $setting = null): array
 		'configured' => $key !== '',
 		'supported' => $base !== '',
 		'base' => $base,
+		'privacy' => $base !== '' ? $base . '/sms-shortener/privacy' : '',
 	];
 }

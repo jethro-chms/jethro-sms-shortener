@@ -5,10 +5,11 @@
  * ≤160 GSM-7 characters) while keeping its meaning. Used by Jethro's SMS
  * composer to offer a cheaper alternative for multi-recipient sends.
  *
- * Endpoint:
+ * Endpoints:
  *   POST /api/sms-shorten  { message: string, segments?: number }
  *     Authorization: Bearer <key>
  *   → 200 { message, fits, attempts, target, original: SegmentInfo, result: SegmentInfo }
+ *   GET /sms-shortener/privacy  → the privacy page (privacy.js)
  *
  * The model (Workers AI) only proposes wording; this Worker counts segments
  * itself and retries with tighter budgets, because LLMs cannot count
@@ -22,6 +23,8 @@
  *
  * Deploy: cf deploy
  */
+
+import { PRIVACY_PATH, privacyPage } from './privacy.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -57,7 +60,13 @@ export default {
       return handleShorten(request, env);
     }
 
-    return new Response('SMS shortener - POST /api/sms-shorten', { status: 200 });
+    if (url.pathname === PRIVACY_PATH && (request.method === 'GET' || request.method === 'HEAD')) {
+      return new Response(privacyPage(env, env.MODEL || DEFAULT_MODEL), {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600' },
+      });
+    }
+
+    return new Response(`SMS shortener - POST /api/sms-shorten; privacy: ${PRIVACY_PATH}`, { status: 200 });
   },
 };
 
