@@ -17,6 +17,9 @@ interface SmsShortener
 	 *
 	 * @param int|null $segments most segments wanted; null = one fewer than $message uses.
 	 *        The service may aim lower, e.g. when dropping emoji (which force UCS-2) saves more.
+	 * @param float|null $maxCut largest share of the text (0 to 1) a rewrite may cut; beyond it the
+	 *        service returns $message unchanged without asking the model. 1 = always try;
+	 *        null = the service's default (0.3).
 	 * @return array{message: string, fits: bool, attempts: int, target: int,
 	 *               original: array{encoding: string, length: int, segments: int},
 	 *               result: array{encoding: string, length: int, segments: int}}
@@ -24,7 +27,7 @@ interface SmsShortener
 	 *         else the shortest acceptable one; fits: result.segments <= target
 	 * @throws \RuntimeException on network or API errors
 	 */
-	public function shorten(string $message, ?int $segments = null): array;
+	public function shorten(string $message, ?int $segments = null, ?float $maxCut = null): array;
 }
 
 class JethroAuSmsShortener implements SmsShortener
@@ -35,10 +38,11 @@ class JethroAuSmsShortener implements SmsShortener
 		private int $timeout = 20,
 	) {}
 
-	public function shorten(string $message, ?int $segments = null): array
+	public function shorten(string $message, ?int $segments = null, ?float $maxCut = null): array
 	{
 		$payload = ['message' => $message];
 		if ($segments !== null) $payload['segments'] = $segments;
+		if ($maxCut !== null) $payload['max_cut'] = max(0.0, min(1.0, $maxCut));
 
 		$ch = curl_init($this->endpoint);
 		curl_setopt_array($ch, [

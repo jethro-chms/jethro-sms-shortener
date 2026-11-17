@@ -247,6 +247,17 @@ async function runUnitTests() {
     eq(cutShare(segmentInfo('a'.repeat(160 / 0.7)), 1) <= 0.3, true, '228 chars into 160 is allowed');
   });
 
+  await test('a caller\'s max cut overrides the 30% default; 1 means always try', async () => {
+    let calls = 0;
+    const complete = async () => { calls++; return 'a'.repeat(150); };
+    const r = await shortenMessage('a'.repeat(300), null, complete, 1);
+    eq(calls, 1);
+    eq(r.fits, true);
+    eq(r.target, 1);
+    const strict = await shortenMessage('a'.repeat(200), null, complete, 0.1);
+    eq(strict.attempts, 0, '200 into 160 cuts 20%, over a 10% limit');
+  });
+
   console.log('\n🧪 SMS shortener — fetch handler\n');
 
   const ai = fakeAi(['Hi %firstname%, bee Sat 8am. https://example.com/working-bee']);
@@ -277,6 +288,15 @@ async function runUnitTests() {
     eq((await worker.fetch(post({ message: '' }), { ...env, API_KEY: API_KEY })).status, 400);
     eq((await worker.fetch(post({ message: 'x'.repeat(2000) }), { ...env, API_KEY: API_KEY })).status, 400);
     eq((await worker.fetch(post({ message: LONG, segments: 0 }), { ...env, API_KEY: API_KEY })).status, 400);
+    eq((await worker.fetch(post({ message: LONG, max_cut: 1.5 }), { ...env, API_KEY: API_KEY })).status, 400);
+    eq((await worker.fetch(post({ message: LONG, max_cut: '1' }), { ...env, API_KEY: API_KEY })).status, 400);
+  });
+
+  await test('max_cut reaches the gate: 300 characters are tried at max_cut 1', async () => {
+    const ai3 = fakeAi(['a'.repeat(150)]);
+    const data = await (await worker.fetch(post({ message: 'a'.repeat(300), max_cut: 1 }, 'cus_good'), { ...env, AI: ai3 })).json();
+    eq(ai3.calls.length, 1);
+    eq(data.result.segments, 1);
   });
 
   await test('rate limiter refusal → 429', async () => {

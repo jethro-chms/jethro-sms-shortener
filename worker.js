@@ -6,7 +6,7 @@
  * composer to offer a cheaper alternative for multi-recipient sends.
  *
  * Endpoints:
- *   POST /api/sms-shorten  { message: string, segments?: number }
+ *   POST /api/sms-shorten  { message: string, segments?: number, max_cut?: number }
  *     Authorization: Bearer <key>
  *   → 200 { message, fits, attempts, target, original: SegmentInfo, result: SegmentInfo }
  *   GET /sms-shortener/privacy  → the privacy page (privacy.js)
@@ -42,7 +42,8 @@ export const MAX_INPUT_LENGTH = 1530;
 export const MAX_ATTEMPTS = 3;
 
 /**
- * Largest share of the text a rewrite may have to cut. Beyond it (e.g. 300
+ * Default largest share of the text a rewrite may have to cut (requests may
+ * set their own with max_cut, 0 to 1; 1 = always try). Beyond it (e.g. 300
  * characters into 160) a rewording would lose meaning, so no model call is
  * made; just over a boundary (e.g. 161 characters) is always worth a try.
  */
@@ -95,7 +96,7 @@ async function handleShorten(request, env) {
   } catch {
     return jsonResponse({ error: 'Body must be JSON' }, 400);
   }
-  const { message, segments } = body ?? {};
+  const { message, segments, max_cut: maxCut } = body ?? {};
   if (typeof message !== 'string' || message.trim() === '') {
     return jsonResponse({ error: 'message must be a non-empty string' }, 400);
   }
@@ -105,9 +106,12 @@ async function handleShorten(request, env) {
   if (segments !== undefined && !(Number.isInteger(segments) && segments >= 1)) {
     return jsonResponse({ error: 'segments must be a positive integer' }, 400);
   }
+  if (maxCut !== undefined && !(typeof maxCut === 'number' && maxCut >= 0 && maxCut <= 1)) {
+    return jsonResponse({ error: 'max_cut must be a number from 0 to 1' }, 400);
+  }
 
   try {
-    const result = await shortenMessage(message, segments ?? null, (messages) => runModel(env, messages));
+    const result = await shortenMessage(message, segments ?? null, (messages) => runModel(env, messages), maxCut ?? MAX_CUT_SHARE);
     return jsonResponse(result);
   } catch (error) {
     console.error('Model error:', error);
@@ -126,7 +130,7 @@ async function handleShorten(request, env) {
  * the original wording. Of the rewrites that fit, the longest wins.
  *
  * No model call is made when normalising alone fits, or when fitting would
- * mean cutting more than MAX_CUT_SHARE of the text ({@link cutShare}).
+ * mean cutting more than $maxCut of the text ({@link cutShare}).
  *
  * Pure apart from the injected `complete(messages) → Promise<string>`, so it
  * is testable without Workers AI.
@@ -136,7 +140,7 @@ async function handleShorten(request, env) {
  *   message: the longest rewrite that fits, else the shortest acceptable one
  *   (the normalised input when no attempt was shorter); fits: result.segments <= target.
  */
-export async function shortenMessage(message, wanted, complete) {
+export async function shortenMessage(message, wanted, complete, maxCut = MAX_CUT_SHARE) {
   const original = segmentInfo(message);
   const cleaned = normalise(message);
   const before = segmentInfo(cleaned);
@@ -148,11 +152,11 @@ export async function shortenMessage(message, wanted, complete) {
   // Rewrites are GSM-7, so start from the text without emoji and other
   // non-GSM characters: dropping them alone may save several segments (a
   // UCS-2 segment holds 70 characters, a GSM-7 one 160). Then aim one
-  // segment lower when that needs at most MAX_CUT_SHARE cut. A requested
+  // segment lower when that needs at most $maxCut cut. A requested
   // target is a maximum: a better one is used when available.
   const plainText = stripNonGsm(cleaned);
   const plain = segmentInfo(plainText);
-  const best = plain.segments > 1 && cutShare(plain, plain.segments - 1) <= MAX_CUT_SHARE ? plain.segments - 1 : plain.segments;
+  const best = plain.segments > 1 && cutShare(plain, plain.segments - 1) <= maxCut ? plain.segments - 1 : plain.segments;
   const target = wanted != null && wanted < best ? wanted : best;
 
   if (target >= before.segments) {
@@ -162,7 +166,7 @@ export async function shortenMessage(message, wanted, complete) {
   if (plain.segments <= target && mustKeep.every((t) => plainText.includes(t))) {
     return { message: plainText, fits: true, attempts: 0, target, original, result: plain };
   }
-  if (cutShare(plain, target) > MAX_CUT_SHARE) {
+  if (cutShare(plain, target) > maxCut) {
     return { message: cleaned, fits: false, attempts: 0, target, original, result: before };
   }
 

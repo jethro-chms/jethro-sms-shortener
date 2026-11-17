@@ -108,8 +108,10 @@ curl -X POST https://jethro.au/api/sms-shorten \
   -d '{"message": "Hi %firstname%, a reminder that the working bee ...", "segments": 1}'
 ```
 
-`segments` is optional (default: one fewer than the message uses). Messages
-are limited to 1530 characters.
+`segments` is optional (a maximum; default: one fewer than the message uses).
+`max_cut` is optional: the largest share of the text, 0 to 1, a rewrite may
+have to cut before the model is asked at all (default 0.3; 1 = always try).
+Messages are limited to 1530 characters.
 
 ```json
 {
@@ -141,7 +143,7 @@ require 'vendor/autoload.php';   // or require 'src/php/SmsShortener.php';
 define('SMSSHORTENER', 'jethroau');            // optional; the default
 define('SMSSHORTENER_API_KEY', 'cus_...');
 
-$r = getSmsShortener()->shorten($message);      // or ->shorten($message, segments: 1)
+$r = getSmsShortener()->shorten($message);      // or ->shorten($message, segments: 1, maxCut: 1.0)
 if ($r['fits']) echo $r['message'];
 ```
 
