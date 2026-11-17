@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.3/.schema/devbox.schema.json",
+  "packages": [
+    "nodejs_24",
+    "php"
+  ],
+  "env_from": ".env",
+  "shell": {
+    "scripts": {
+      "test":      "node test_worker.js",
+      "test-live": "php src/php/test.php \"$@\"",
+      "deploy":    "npx cf deploy",
+      "shorten":   "php src/php/shorten.php \"$@\"",
+      "help": [
+        "echo '  test                         Offline worker tests (fake Workers AI)'",
+        "echo '  test-live                    PHP client against the deployed worker'",
+        "echo '  deploy                       Redeploy the worker'",
+        "echo '  shorten <message> [segs]     Reword a message to fit fewer segments'",
+        "echo '  help                         Show this help'"
+      ]
+    }
+  }
+}

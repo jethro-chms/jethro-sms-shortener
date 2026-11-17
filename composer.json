@@ -1,0 +1,19 @@
+{
+    "name": "jethro/jethro-sms-shortener",
+    "description": "Rewords SMS messages to fit in fewer segments, via a Cloudflare Workers AI service",
+    "type": "library",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "files": [
+            "src/php/SmsShortener.php"
+        ]
+    },
+    "scripts": {
+        "test": "php src/php/test.php"
+    }
+}

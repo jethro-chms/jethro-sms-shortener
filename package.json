@@ -1,0 +1,24 @@
+{
+  "name": "jethro-sms-shortener",
+  "version": "0.1.0",
+  "description": "Rewords SMS messages to fit in fewer segments, with Cloudflare Workers AI",
+  "type": "module",
+  "main": "worker.js",
+  "scripts": {
+    "dev": "cf dev",
+    "deploy": "cf deploy",
+    "test": "node test_worker.js",
+    "test:live": "BASE_URL=https://yourdomain.com node test_worker.js"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "workers-ai",
+    "sms"
+  ],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-91c870c02",
+    "cf": "1.0.0-beta.14",
+    "vite": "^8.3.4"
+  }
+}

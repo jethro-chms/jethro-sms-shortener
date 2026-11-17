@@ -1,0 +1,13 @@
+node_modules
+.wrangler
+.cloudflare
+cloudflare.config.ts
+devbox.d
+.env
+.env.*
+!.env.example
+.dev.vars
+*.log
+dist
+build
+.idea
