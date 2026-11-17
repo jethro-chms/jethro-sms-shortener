@@ -7,7 +7,8 @@ GSM-7 characters it costs one, which halves the cost of a bulk send.
 
 [Jethro](https://github.com/tbar0970/jethro-pmm)'s SMS composer uses it: after
 3 seconds without typing, a multi-segment message to more than one recipient
-gets a "shorter alternative" suggestion with a *Use this instead* link.
+gets a "Shorter alternative" suggestion with a *Use instead?* link, and
+*shorter* / *longer* links that ask for one segment fewer or more.
 
 Also included is a PHP client, installed with Composer as `jethro/jethro-sms-shortener`.
 
@@ -16,12 +17,12 @@ Also included is a PHP client, installed with Composer as `jethro/jethro-sms-sho
 ```mermaid
 flowchart LR
   A[POST message] --> B[Normalise: smart quotes, dashes, ellipsis → GSM-7]
-  B --> T[Target: GSM-7 segments without emoji, minus 1 if that cuts ≤ 30%]
+  B --> T[Target: GSM-7 segments without emoji, minus 1 if that cuts ≤ max_cut]
   T --> C{Fits target, or dropping emoji alone does?}
   C -- yes --> R[Return]
-  C -- no --> H{Must cut > 30%?}
+  C -- no --> H{Must cut > max_cut?}
   H -- yes --> S[Return unchanged, fits=false, no model call]
-  H -- no --> D[Model: minimal edits to N-20..N chars]
+  H -- no --> D[Model: editor's trim in the sender's voice, asked for N-5..N+15 chars]
   D --> E[Count segments; check tokens kept]
   E -- fits, near the limit --> R
   E -- fits but cut too much / too long / lost a token, attempts left --> F[Retry with its answer + feedback]
@@ -39,24 +40,32 @@ flowchart LR
 - **Protected tokens.** Jethro placeholders (`%firstname%`,
   `%selected.firstname%`, `%(shorten "…")%`), URLs and phone numbers must
   appear verbatim in a rewrite, or it is rejected.
-- **Minimal edits.** The model is told to keep the original wording, order
-  and every detail, cutting filler first, then abbreviating, then rephrasing,
-  and to land within 20 characters under the budget. A rewrite that fits but
-  cuts more than that (models like to summarise, dropping details) is retried
-  with "keep more of the wording", within the 3 calls; of the rewrites that
-  fit, the longest wins.
+- **The sender's voice, trimmed.** The model is told it is an editor, not a
+  summariser: keep the same person ("I", "we", "you"), greeting, sign-off and
+  warmth, never turn a message into a notice about its sender ("I will host"
+  → "Sam hosts"), keep every fact, and cut filler first, then abbreviate,
+  then tighten phrasing. One worked example (an informal first-person SMS
+  trimmed to 149 characters) comes before the real message.
+- **Landing near the limit.** The model reliably undershoots length targets
+  by 20-40 characters, so it is first asked for a range reaching 15
+  characters past the limit (`ASK_ABOVE`); the Worker keeps only rewrites
+  that fit. One that fits but is more than 20 characters under the limit
+  (`AIM_WINDOW`) is retried with "you cut too much, put wording back"; one
+  that is too long lowers the next ask. Within the 3 calls, the longest
+  rewrite that fits wins.
 - **Target.** Rewrites are GSM-7, so the target is worked out from the text
   without emoji and other non-GSM characters: one segment fewer than that
-  uses, when getting there means cutting at most 30%, else just what dropping
-  them gives. A message whose only problem is an emoji (a UCS-2 segment holds
-  70 characters, a GSM-7 one 160) comes back with the emoji dropped and no
-  model call. A caller's `segments` is a maximum; a better target is used when
-  available.
+  uses, when getting there means cutting at most `max_cut` (default 30%),
+  else just what dropping them gives. A message whose only problem is an
+  emoji (a UCS-2 segment holds 70 characters, a GSM-7 one 160) comes back
+  with the emoji dropped and no model call. A caller's `segments` is a
+  maximum; a better target is used when available.
 - **Only promising cases reach the model.** When fitting the target would
-  mean cutting more than 30% of the text (e.g. 300 characters into 160), the
-  Worker returns `fits: false, attempts: 0` without a model call: that much
-  cutting loses meaning. Just over a boundary (161 characters: cut 1) is
-  always tried.
+  mean cutting more than `max_cut` of the text (by default 30%, e.g. 300
+  characters into 160), the Worker returns `fits: false, attempts: 0` without
+  a model call: that much cutting loses meaning. Just over a boundary (161
+  characters: cut 1) is always tried. Callers can pass `max_cut: 1` to
+  always try.
 
 Callers should still re-count the result with their own segment maths, since
 that is what their SMS gateway bills.
@@ -65,9 +74,10 @@ that is what their SMS gateway bills.
 
 The default model is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, which follows
 length limits far better than the small models. Override it with a `MODEL`
-variable. One attempt is roughly 250 input and 60 output tokens, about 19
-Neurons with the 70B model. Workers AI includes 10,000 Neurons a day on every
-plan (about 500 attempts); beyond that Workers Paid charges $0.011 per 1,000
+variable. One attempt is roughly 550 input tokens (instructions, the worked
+example and the message) and 60 output tokens, about 27 Neurons with the 70B
+model. Workers AI includes 10,000 Neurons a day on every plan (about 370
+attempts); beyond that Workers Paid charges $0.011 per 1,000
 Neurons ([pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)).
 
 The `RATE_LIMITER` binding caps each API key at 20 requests a minute.
@@ -130,7 +140,7 @@ for UCS-2, UTF-16 code units. When no attempt fits, `fits` is false and
 
 | Status | Meaning |
 |---|---|
-| 400 | Body is not JSON, `message` is empty or too long, or `segments` is not a positive integer |
+| 400 | Body is not JSON, `message` is empty or too long, `segments` is not a positive integer, or `max_cut` is not a number from 0 to 1 |
 | 401 | Missing or unknown API key |
 | 429 | Rate limit exceeded |
 | 502 | Workers AI call failed |

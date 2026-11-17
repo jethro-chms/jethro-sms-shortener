@@ -38,7 +38,7 @@ export const DEFAULT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 /** Longest message accepted (10 GSM-7 segments); bounds model cost per call. */
 export const MAX_INPUT_LENGTH = 1530;
 
-/** Model calls per request: the first try plus retries with tighter budgets. */
+/** Model calls per request: the first try plus retries (too long, lost a token, or cut too much). */
 export const MAX_ATTEMPTS = 3;
 
 /**
@@ -50,11 +50,18 @@ export const MAX_ATTEMPTS = 3;
 export const MAX_CUT_SHARE = 0.3;
 
 /**
- * How far under its character budget a rewrite may land and still count as a
- * minimal edit. Fitting rewrites shorter than that cut more than needed, so
- * the model is asked to keep more of the original wording.
+ * How far under the limit a rewrite may land and still count as a minimal
+ * edit. Fitting rewrites shorter than that cut more than needed, so the
+ * model is asked to put wording back.
  */
 export const AIM_WINDOW = 20;
+
+/**
+ * How far past the real limit the model is first asked to aim. It reliably
+ * undershoots (by 20-40 characters on 160), and the code only keeps
+ * rewrites that fit, so aiming a little high lands closest to the limit.
+ */
+export const ASK_ABOVE = 15;
 
 export default {
   async fetch(request, env, ctx) {
@@ -121,13 +128,15 @@ async function handleShorten(request, env) {
 
 /**
  * Reword $message until it fits in $wanted segments (default: one fewer than
- * it uses now), or MAX_ATTEMPTS model calls have been made.
+ * it uses now), or MAX_ATTEMPTS model calls have been made, keeping as much
+ * of the sender's own wording and voice as possible ({@link buildPrompt}).
  *
- * The aim is the smallest edit that fits: a rewrite should land just under
- * the segment boundary, within AIM_WINDOW characters of its budget. A rewrite
- * that fits but cuts more than that (models readily summarise, dropping
- * details) is kept as a fallback and the model is asked again to keep more of
- * the original wording. Of the rewrites that fit, the longest wins.
+ * The model undershoots length targets (by 20-40 characters on 160), so it is
+ * asked for a range reaching ASK_ABOVE characters past the real limit; the
+ * code keeps only rewrites that fit. A rewrite that fits but lands more than
+ * AIM_WINDOW under the limit cut more than needed: it is kept as a fallback
+ * and the model is asked to put wording back. One that is too long lowers the
+ * next ask. Of the rewrites that fit, the longest wins.
  *
  * No model call is made when normalising alone fits, or when fitting would
  * mean cutting more than $maxCut of the text ({@link cutShare}).
@@ -170,39 +179,37 @@ export async function shortenMessage(message, wanted, complete, maxCut = MAX_CUT
     return { message: cleaned, fits: false, attempts: 0, target, original, result: before };
   }
 
-  // Rewrites are plain ASCII, so budget against GSM-7 capacity, minus a
-  // margin because models overshoot length limits.
   const limit = gsmCapacity(target);
   let fit = null;             // longest acceptable rewrite that fits
   let fallback = plainText;   // shortest acceptable rewrite, when none fits
   let fallbackInfo = plain;
   let feedback = null;
-  let margin = 8;
+  let ceiling = limit + ASK_ABOVE;
   let attempt = 0;
 
   while (attempt < MAX_ATTEMPTS) {
     attempt++;
-    const budget = limit - margin;
-    const out = normalise(stripQuotes(await complete(buildPrompt(cleaned, plain.length, budget, mustKeep, feedback))));
+    const out = normalise(stripQuotes(await complete(buildPrompt(cleaned, plain.length, ceiling, mustKeep, feedback))));
     const info = segmentInfo(out);
     const lost = mustKeep.filter((t) => !out.includes(t));
     const acceptable = out !== '' && lost.length === 0;
 
     if (acceptable && info.segments <= target) {
       if (!fit || info.length > fit.info.length) fit = { out, info };
-      if (info.length >= budget - AIM_WINDOW) break;
-      feedback = { answer: out, text: `That fits, but at ${info.length} characters it cut more than needed. Start again from the original `
-        + `message and keep more of its wording and details, aiming for ${budget - AIM_WINDOW} to ${budget} characters.` };
+      if (info.length >= limit - AIM_WINDOW) break;
+      feedback = { answer: out, text: `That is only ${info.length} characters, ${limit - info.length} under the limit of ${limit}: `
+        + `you cut too much. Put back wording from the original message (its greeting, sign-off, personal phrases and details), `
+        + `in the sender's own voice, until it is ${limit - AIM_WINDOW} to ${limit} characters.` };
       continue;
     }
     if (acceptable && info.length < fallbackInfo.length) {
       fallback = out;
       fallbackInfo = info;
     }
-    margin += 10;
+    ceiling = Math.min(ceiling, limit) - 10 * attempt;
     feedback = { answer: out, text: lost.length
       ? `You dropped required tokens: ${lost.join('  ')}. Include each exactly as written.`
-      : `That was ${info.length} characters; it must be at most ${limit - margin}. Shorten it further.` };
+      : `That was ${info.length} characters; it must be at most ${limit}. Shorten it a little, keeping the sender's voice.` };
   }
   return fit
     ? { message: fit.out, fits: true, attempts: attempt, target, original, result: fit.info }
@@ -210,33 +217,49 @@ export async function shortenMessage(message, wanted, complete, maxCut = MAX_CUT
 }
 
 /**
+ * Example exchange shown to the model before the real message: an informal,
+ * first-person SMS trimmed to just under 160 characters, keeping its voice,
+ * greeting and sign-off. Models otherwise tend to summarise into third-person
+ * notices ("Sam hosts games night…") far shorter than needed.
+ */
+const EXAMPLE = {
+  message: "Hi all! Just a quick reminder that I'm running the youth group games night this Friday at 7pm in the church hall. "
+    + 'Please bring a friend and some snacks to share if you can. Thanks heaps, Sam',
+  rewrite: "Hi all! Quick reminder I'm running youth group games night Fri 7pm in church hall. Pls bring a friend & snacks to share if you can. Thanks heaps, Sam",
+};
+
+/**
  * Chat messages asking the model for one rewrite of $message, $length
- * characters as plain GSM-7, in at most $budget characters and as close to
- * it as possible.
+ * characters as plain GSM-7, to between $ceiling - AIM_WINDOW and $ceiling
+ * characters: an editor's trim in the sender's own voice, after one worked
+ * example ({@link EXAMPLE}).
  *
  * @param {{answer: string, text: string} | null} feedback  the previous
  *   answer and what was wrong with it, for a retry
  */
-export function buildPrompt(message, length, budget, mustKeep, feedback) {
+export function buildPrompt(message, length, ceiling, mustKeep, feedback) {
+  const ask = (len, max) => `This message is ${len} characters. Shorten it to between ${max - AIM_WINDOW} and ${max} characters `
+    + `(remove about ${len - max + AIM_WINDOW / 2} characters):\n\n`;
   const messages = [
     {
       role: 'system',
       content:
-        'You shorten SMS messages sent by a church to its members by making the smallest edits that fit the length limit. '
-        + 'Keep the original wording, order and tone wherever you can, and every piece of information: '
-        + 'names, dates, times, places, instructions and any call to action. '
-        + 'Cut in this order, stopping as soon as the message fits: filler words and pleasantries ("just", "so much", "that"), '
-        + 'then common abbreviations ("&" for "and", "Sat", "pls", "8am"), then tighter phrasing. Drop information only as a last resort. '
-        + 'The result should be close to the limit, not much shorter. '
-        + 'Use plain ASCII only: no emoji, no smart quotes, no dashes other than "-". Stay readable and polite. '
-        + (mustKeep.length ? `Copy these tokens exactly, unchanged: ${mustKeep.join('  ')}. ` : '')
-        + 'Reply with ONLY the rewritten message: no quotes, no commentary.',
+        'You edit SMS messages sent by a church to its members so they fit a length limit. '
+        + 'You are an editor, not a summariser: return the sender\'s own message, trimmed as little as possible.\n'
+        + '- Keep the sender\'s voice: the same person ("I", "we", "you"), the same greeting and sign-off, the same warmth and informality. '
+        + 'Never turn it into a notice about the sender (never "I will host" -> "Sam hosts").\n'
+        + '- Keep every fact: names, dates, times, places, what to bring, instructions and any call to action.\n'
+        + '- Cut in this order, stopping as soon as it fits: filler and pleasantries that carry no facts ("just", "so much", "that"), '
+        + 'then shorter words and common abbreviations ("&" for "and", "Sat", "pls", "4pm"), then tighter phrasing. '
+        + 'Keep whole sentences readable; do not reduce it to a telegram or a list.\n'
+        + '- Use most of the limit: a result well under it has cut too much.\n'
+        + '- Use plain ASCII only: no emoji, no smart quotes, no dashes other than "-".\n'
+        + (mustKeep.length ? `- Copy these tokens exactly, unchanged: ${mustKeep.join('  ')}\n` : '')
+        + '- Reply with ONLY the edited message: no quotes, no commentary.',
     },
-    {
-      role: 'user',
-      content: `This message is ${length} characters. Shorten it to between ${budget - AIM_WINDOW} and ${budget} characters `
-        + `(remove about ${length - budget + AIM_WINDOW / 2} characters):\n\n${message}`,
-    },
+    { role: 'user', content: ask(EXAMPLE.message.length, 152) + EXAMPLE.message },
+    { role: 'assistant', content: EXAMPLE.rewrite },
+    { role: 'user', content: ask(length, ceiling) + message },
   ];
   if (feedback) {
     messages.push({ role: 'assistant', content: feedback.answer }, { role: 'user', content: feedback.text });

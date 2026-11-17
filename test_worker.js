@@ -144,15 +144,19 @@ async function runUnitTests() {
     assert(prompts[1].at(-1).content.includes('%firstname%'), 'feedback names the dropped token');
   });
 
-  await test('a rewrite that is still too long is retried with a tighter budget', async () => {
+  // The real request follows the system prompt and the worked example (user + assistant).
+  const askOf = (m) => m[3].content;
+
+  await test('the first ask aims a little past the limit (the model undershoots); a too-long reply lowers it', async () => {
     const prompts = [];
     const tooLong = 'Hi %firstname% ' + 'x'.repeat(170) + ' https://example.com/working-bee';
     const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return prompts.length === 1 ? tooLong : NEAR; });
     eq(r.attempts, 2);
     eq(r.fits, true);
-    const budget = (m) => Number(m[1].content.match(/and (\d+) characters/)[1]);
-    assert(budget(prompts[1]) < budget(prompts[0]), 'second budget is smaller');
-    assert(budget(prompts[0]) < gsmCapacity(1), 'budget leaves a margin');
+    const ceiling = (m) => Number(askOf(m).match(/and (\d+) characters/)[1]);
+    assert(ceiling(prompts[0]) > gsmCapacity(1), 'first ask reaches past 160');
+    assert(ceiling(prompts[1]) < gsmCapacity(1), 'after a too-long reply, the ask is under 160');
+    assert(prompts[1].at(-1).content.includes('at most 160'), 'feedback gives the real limit');
   });
 
   await test('a rewrite that cuts far more than needed is retried, keeping more wording', async () => {
@@ -161,7 +165,7 @@ async function runUnitTests() {
     const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return prompts.length === 1 ? overCut : NEAR; });
     eq(r.attempts, 2);
     eq(r.message, NEAR);
-    assert(prompts[1].at(-1).content.includes('cut more than needed'), 'feedback asks to keep more');
+    assert(prompts[1].at(-1).content.includes('you cut too much'), 'feedback asks to put wording back');
   });
 
   await test('if retries never land near the limit, the longest rewrite that fits wins', async () => {
@@ -192,7 +196,7 @@ async function runUnitTests() {
     const r = await shortenMessage(msg, null, async (m) => { prompts.push(m); return 'Hi %firstname%, ' + 'b'.repeat(130); });
     eq(r.target, 1);
     eq(r.fits, true);
-    assert(prompts[0][1].content.startsWith('This message is 186 characters'), 'length counted without the emoji');
+    assert(askOf(prompts[0]).startsWith('This message is 186 characters'), 'length counted without the emoji');
   });
 
   await test('a requested segment count is a maximum: a better target is used', async () => {

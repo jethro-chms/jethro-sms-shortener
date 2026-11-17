@@ -90,8 +90,10 @@ ${contact}.</p>
 <a href="https://github.com/jethro-chms/jethro-sms-shortener">github.com/jethro-chms/jethro-sms-shortener</a>.</p>
 
 <h2>What is sent, and when</h2>
-<p>Jethro sends a request only when someone is writing an SMS to more than one person, the message is longer than
-one SMS segment (160 characters), and they stop typing for 3 seconds. The request contains:</p>
+<p>Jethro sends a request only when someone is writing an SMS to more than one person and the message is longer than
+one SMS segment (160 characters): when they stop typing for 3 seconds, change who it is going to, or ask for a shorter
+or longer suggestion. Jethro remembers each user's recent suggestions, so asking again for one does not resend the
+text. The request contains:</p>
 <ul>
   <li>the message text as typed, with placeholders such as <code>%firstname%</code> not yet filled in, so recipients'
     names are not included unless they were typed into the message;</li>
