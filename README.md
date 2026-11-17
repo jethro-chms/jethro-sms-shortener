@@ -16,16 +16,17 @@ Also included is a PHP client, installed with Composer as `jethro/jethro-sms-sho
 ```mermaid
 flowchart LR
   A[POST message] --> B[Normalise: smart quotes, dashes, ellipsis → GSM-7]
-  B --> C{Fits target?}
+  B --> T[Target: GSM-7 segments without emoji, minus 1 if that cuts ≤ 30%]
+  T --> C{Fits target, or dropping emoji alone does?}
   C -- yes --> R[Return]
   C -- no --> H{Must cut > 30%?}
   H -- yes --> S[Return unchanged, fits=false, no model call]
-  H -- no --> D[Model: rewrite in ≤ N chars]
+  H -- no --> D[Model: minimal edits to N-20..N chars]
   D --> E[Count segments; check tokens kept]
-  E -- fits --> R
-  E -- too long / lost a token, attempts left --> F[Retry: tighter budget + feedback]
+  E -- fits, near the limit --> R
+  E -- fits but cut too much / too long / lost a token, attempts left --> F[Retry with its answer + feedback]
   F --> D
-  E -- 3 attempts used --> G[Return shortest acceptable rewrite, fits=false]
+  E -- 3 attempts used --> G[Return longest rewrite that fits, else shortest, fits=false]
 ```
 
 - **The Worker counts, the model only writes.** LLMs can't count characters
@@ -38,8 +39,19 @@ flowchart LR
 - **Protected tokens.** Jethro placeholders (`%firstname%`,
   `%selected.firstname%`, `%(shorten "…")%`), URLs and phone numbers must
   appear verbatim in a rewrite, or it is rejected.
-- **Target.** One segment fewer than the message uses, unless the caller asks
-  for a specific segment count.
+- **Minimal edits.** The model is told to keep the original wording, order
+  and every detail, cutting filler first, then abbreviating, then rephrasing,
+  and to land within 20 characters under the budget. A rewrite that fits but
+  cuts more than that (models like to summarise, dropping details) is retried
+  with "keep more of the wording", within the 3 calls; of the rewrites that
+  fit, the longest wins.
+- **Target.** Rewrites are GSM-7, so the target is worked out from the text
+  without emoji and other non-GSM characters: one segment fewer than that
+  uses, when getting there means cutting at most 30%, else just what dropping
+  them gives. A message whose only problem is an emoji (a UCS-2 segment holds
+  70 characters, a GSM-7 one 160) comes back with the emoji dropped and no
+  model call. A caller's `segments` is a maximum; a better target is used when
+  available.
 - **Only promising cases reach the model.** When fitting the target would
   mean cutting more than 30% of the text (e.g. 300 characters into 160), the
   Worker returns `fits: false, attempts: 0` without a model call: that much

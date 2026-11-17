@@ -48,6 +48,13 @@ export const MAX_ATTEMPTS = 3;
  */
 export const MAX_CUT_SHARE = 0.3;
 
+/**
+ * How far under its character budget a rewrite may land and still count as a
+ * minimal edit. Fitting rewrites shorter than that cut more than needed, so
+ * the model is asked to keep more of the original wording.
+ */
+export const AIM_WINDOW = 20;
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -112,6 +119,12 @@ async function handleShorten(request, env) {
  * Reword $message until it fits in $wanted segments (default: one fewer than
  * it uses now), or MAX_ATTEMPTS model calls have been made.
  *
+ * The aim is the smallest edit that fits: a rewrite should land just under
+ * the segment boundary, within AIM_WINDOW characters of its budget. A rewrite
+ * that fits but cuts more than that (models readily summarise, dropping
+ * details) is kept as a fallback and the model is asked again to keep more of
+ * the original wording. Of the rewrites that fit, the longest wins.
+ *
  * No model call is made when normalising alone fits, or when fitting would
  * mean cutting more than MAX_CUT_SHARE of the text ({@link cutShare}).
  *
@@ -120,71 +133,110 @@ async function handleShorten(request, env) {
  *
  * @returns {Promise<{message: string, fits: boolean, attempts: number, target: number,
  *   original: SegmentInfo, result: SegmentInfo}>}
- *   message: the shortest acceptable rewrite (the normalised input when no
- *   attempt was shorter); fits: result.segments <= target.
+ *   message: the longest rewrite that fits, else the shortest acceptable one
+ *   (the normalised input when no attempt was shorter); fits: result.segments <= target.
  */
 export async function shortenMessage(message, wanted, complete) {
   const original = segmentInfo(message);
   const cleaned = normalise(message);
   const before = segmentInfo(cleaned);
-  const target = wanted ?? Math.max(1, original.segments - 1);
 
-  if (before.segments <= target) {
-    return { message: cleaned, fits: true, attempts: 0, target, original, result: before };
+  if (before.segments === 1 || (wanted != null && before.segments <= wanted)) {
+    return { message: cleaned, fits: true, attempts: 0, target: wanted ?? 1, original, result: before };
   }
-  if (cutShare(before, target) > MAX_CUT_SHARE) {
+
+  // Rewrites are GSM-7, so start from the text without emoji and other
+  // non-GSM characters: dropping them alone may save several segments (a
+  // UCS-2 segment holds 70 characters, a GSM-7 one 160). Then aim one
+  // segment lower when that needs at most MAX_CUT_SHARE cut. A requested
+  // target is a maximum: a better one is used when available.
+  const plainText = stripNonGsm(cleaned);
+  const plain = segmentInfo(plainText);
+  const best = plain.segments > 1 && cutShare(plain, plain.segments - 1) <= MAX_CUT_SHARE ? plain.segments - 1 : plain.segments;
+  const target = wanted != null && wanted < best ? wanted : best;
+
+  if (target >= before.segments) {
+    return { message: cleaned, fits: false, attempts: 0, target: before.segments - 1, original, result: before };
+  }
+  const mustKeep = protectedTokens(cleaned);
+  if (plain.segments <= target && mustKeep.every((t) => plainText.includes(t))) {
+    return { message: plainText, fits: true, attempts: 0, target, original, result: plain };
+  }
+  if (cutShare(plain, target) > MAX_CUT_SHARE) {
     return { message: cleaned, fits: false, attempts: 0, target, original, result: before };
   }
 
   // Rewrites are plain ASCII, so budget against GSM-7 capacity, minus a
   // margin because models overshoot length limits.
   const limit = gsmCapacity(target);
-  const mustKeep = protectedTokens(cleaned);
-  let best = cleaned;
-  let bestInfo = before;
+  let fit = null;             // longest acceptable rewrite that fits
+  let fallback = plainText;   // shortest acceptable rewrite, when none fits
+  let fallbackInfo = plain;
   let feedback = null;
   let margin = 8;
+  let attempt = 0;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  while (attempt < MAX_ATTEMPTS) {
+    attempt++;
     const budget = limit - margin;
-    const out = normalise(stripQuotes(await complete(buildPrompt(cleaned, budget, mustKeep, feedback))));
+    const out = normalise(stripQuotes(await complete(buildPrompt(cleaned, plain.length, budget, mustKeep, feedback))));
     const info = segmentInfo(out);
     const lost = mustKeep.filter((t) => !out.includes(t));
     const acceptable = out !== '' && lost.length === 0;
 
-    if (acceptable && info.length < bestInfo.length) {
-      best = out;
-      bestInfo = info;
-    }
     if (acceptable && info.segments <= target) {
-      return { message: out, fits: true, attempts: attempt, target, original, result: info };
+      if (!fit || info.length > fit.info.length) fit = { out, info };
+      if (info.length >= budget - AIM_WINDOW) break;
+      feedback = { answer: out, text: `That fits, but at ${info.length} characters it cut more than needed. Start again from the original `
+        + `message and keep more of its wording and details, aiming for ${budget - AIM_WINDOW} to ${budget} characters.` };
+      continue;
+    }
+    if (acceptable && info.length < fallbackInfo.length) {
+      fallback = out;
+      fallbackInfo = info;
     }
     margin += 10;
-    feedback = lost.length
+    feedback = { answer: out, text: lost.length
       ? `You dropped required tokens: ${lost.join('  ')}. Include each exactly as written.`
-      : `That was ${info.length} characters; it must be at most ${limit - margin}. Shorten it further.`;
+      : `That was ${info.length} characters; it must be at most ${limit - margin}. Shorten it further.` };
   }
-  return { message: best, fits: false, attempts: MAX_ATTEMPTS, target, original, result: bestInfo };
+  return fit
+    ? { message: fit.out, fits: true, attempts: attempt, target, original, result: fit.info }
+    : { message: fallback, fits: false, attempts: attempt, target, original, result: fallbackInfo };
 }
 
 /**
- * Chat messages asking the model for one rewrite.
+ * Chat messages asking the model for one rewrite of $message, $length
+ * characters as plain GSM-7, in at most $budget characters and as close to
+ * it as possible.
+ *
+ * @param {{answer: string, text: string} | null} feedback  the previous
+ *   answer and what was wrong with it, for a retry
  */
-export function buildPrompt(message, budget, mustKeep, feedback) {
+export function buildPrompt(message, length, budget, mustKeep, feedback) {
   const messages = [
     {
       role: 'system',
       content:
-        'You shorten SMS messages sent by a church to its members. '
-        + 'Keep the meaning, tone, names, dates, times, places and any call to action. '
-        + 'Use plain ASCII only: no emoji, no smart quotes, no dashes other than "-". '
-        + 'Abbreviate sensibly (e.g. "&" for "and", "pls", "info") but stay readable and polite. '
+        'You shorten SMS messages sent by a church to its members by making the smallest edits that fit the length limit. '
+        + 'Keep the original wording, order and tone wherever you can, and every piece of information: '
+        + 'names, dates, times, places, instructions and any call to action. '
+        + 'Cut in this order, stopping as soon as the message fits: filler words and pleasantries ("just", "so much", "that"), '
+        + 'then common abbreviations ("&" for "and", "Sat", "pls", "8am"), then tighter phrasing. Drop information only as a last resort. '
+        + 'The result should be close to the limit, not much shorter. '
+        + 'Use plain ASCII only: no emoji, no smart quotes, no dashes other than "-". Stay readable and polite. '
         + (mustKeep.length ? `Copy these tokens exactly, unchanged: ${mustKeep.join('  ')}. ` : '')
         + 'Reply with ONLY the rewritten message: no quotes, no commentary.',
     },
-    { role: 'user', content: `Rewrite in at most ${budget} characters:\n\n${message}` },
+    {
+      role: 'user',
+      content: `This message is ${length} characters. Shorten it to between ${budget - AIM_WINDOW} and ${budget} characters `
+        + `(remove about ${length - budget + AIM_WINDOW / 2} characters):\n\n${message}`,
+    },
   ];
-  if (feedback) messages.push({ role: 'user', content: feedback });
+  if (feedback) {
+    messages.push({ role: 'assistant', content: feedback.answer }, { role: 'user', content: feedback.text });
+  }
   return messages;
 }
 
@@ -261,6 +313,19 @@ export function normalise(text) {
     .replace(/\u2026/g, '...')
     .replace(/[\u00A0\u2009\u202F]/g, ' ')
     .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Drop characters outside the GSM-7 alphabet (emoji, most non-Latin
+ * letters), tidying the spaces they leave. Apply after normalise().
+ */
+export function stripNonGsm(text) {
+  return [...text]
+    .filter((ch) => GSM_BASIC.has(ch) || GSM_EXTENSION.has(ch))
+    .join('')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ +([.,!?])/g, '$1')
     .trim();
 }
 

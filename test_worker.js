@@ -131,25 +131,74 @@ async function runUnitTests() {
     eq(r.result.segments, 1);
   });
 
+  // 151 characters: within AIM_WINDOW of the first budget (160 - 8), so accepted as a minimal edit.
+  const NEAR = 'Hi %firstname%, reminder: working bee at church hall Sat 8am-noon. Pls bring gloves, hat & water. Morning tea provided. https://example.com/working-bee';
+
   await test('a rewrite that drops a token is rejected and retried with feedback', async () => {
     const prompts = [];
-    const replies = ['Working bee Sat 8am-noon, bring gloves!', 'Hi %firstname%, working bee Sat 8am. https://example.com/working-bee'];
+    const replies = ['Working bee Sat 8am-noon, bring gloves!', NEAR];
     const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return replies[prompts.length - 1]; });
     eq(r.attempts, 2);
-    eq(r.message, replies[1]);
+    eq(r.message, NEAR);
+    eq(prompts[1].at(-2), { role: 'assistant', content: replies[0] }, 'the retry shows the model its previous answer');
     assert(prompts[1].at(-1).content.includes('%firstname%'), 'feedback names the dropped token');
   });
 
   await test('a rewrite that is still too long is retried with a tighter budget', async () => {
     const prompts = [];
     const tooLong = 'Hi %firstname% ' + 'x'.repeat(170) + ' https://example.com/working-bee';
-    const fits = 'Hi %firstname%, bee Sat. https://example.com/working-bee';
-    const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return prompts.length === 1 ? tooLong : fits; });
+    const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return prompts.length === 1 ? tooLong : NEAR; });
     eq(r.attempts, 2);
     eq(r.fits, true);
-    const budget = (m) => Number(m[1].content.match(/at most (\d+)/)[1]);
+    const budget = (m) => Number(m[1].content.match(/and (\d+) characters/)[1]);
     assert(budget(prompts[1]) < budget(prompts[0]), 'second budget is smaller');
     assert(budget(prompts[0]) < gsmCapacity(1), 'budget leaves a margin');
+  });
+
+  await test('a rewrite that cuts far more than needed is retried, keeping more wording', async () => {
+    const prompts = [];
+    const overCut = 'Hi %firstname%, bee Sat. https://example.com/working-bee';
+    const r = await shortenMessage(LONG, null, async (m) => { prompts.push(m); return prompts.length === 1 ? overCut : NEAR; });
+    eq(r.attempts, 2);
+    eq(r.message, NEAR);
+    assert(prompts[1].at(-1).content.includes('cut more than needed'), 'feedback asks to keep more');
+  });
+
+  await test('if retries never land near the limit, the longest rewrite that fits wins', async () => {
+    const replies = [
+      'Hi %firstname%, bee Sat. https://example.com/working-bee',
+      'Hi %firstname%, working bee Sat 8am-noon. https://example.com/working-bee',
+      'Hi %firstname%. https://example.com/working-bee',
+    ];
+    let i = 0;
+    const r = await shortenMessage(LONG, null, async () => replies[i++]);
+    eq(r.attempts, 3);
+    eq(r.fits, true);
+    eq(r.message, replies[1]);
+  });
+
+  await test('emoji alone can force extra segments: dropping them needs no model call', async () => {
+    const msg = 'a'.repeat(300) + ' 🙂';
+    eq(segmentInfo(msg).segments, 5, 'UCS-2');
+    const r = await shortenMessage(msg, null, async () => { throw new Error('no model call expected'); });
+    eq(r.fits, true);
+    eq(r.message, 'a'.repeat(300));
+    eq(r.result.segments, 2);
+  });
+
+  await test('after dropping emoji, a rewrite aims one GSM-7 segment lower when the cut is small', async () => {
+    const prompts = [];
+    const msg = 'Hi %firstname%, ' + 'b'.repeat(170) + ' 🙂';
+    const r = await shortenMessage(msg, null, async (m) => { prompts.push(m); return 'Hi %firstname%, ' + 'b'.repeat(130); });
+    eq(r.target, 1);
+    eq(r.fits, true);
+    assert(prompts[0][1].content.startsWith('This message is 186 characters'), 'length counted without the emoji');
+  });
+
+  await test('a requested segment count is a maximum: a better target is used', async () => {
+    const r = await shortenMessage('a'.repeat(300) + ' 🙂', 4, async () => { throw new Error('no model call expected'); });
+    eq(r.target, 2);
+    eq(r.result.segments, 2);
   });
 
   await test('when nothing fits, the shortest acceptable rewrite is returned with fits=false', async () => {

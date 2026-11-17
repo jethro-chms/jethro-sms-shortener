@@ -13,13 +13,15 @@
 interface SmsShortener
 {
 	/**
-	 * Reword $message to fit in $segments segments.
+	 * Reword $message to fit in $segments segments, or fewer.
 	 *
-	 * @param int|null $segments target segment count; null = one fewer than $message uses
+	 * @param int|null $segments most segments wanted; null = one fewer than $message uses.
+	 *        The service may aim lower, e.g. when dropping emoji (which force UCS-2) saves more.
 	 * @return array{message: string, fits: bool, attempts: int, target: int,
 	 *               original: array{encoding: string, length: int, segments: int},
 	 *               result: array{encoding: string, length: int, segments: int}}
-	 *         message: the shortest acceptable rewrite; fits: result.segments <= target
+	 *         message: the longest rewrite that fits target (a minimal edit of $message),
+	 *         else the shortest acceptable one; fits: result.segments <= target
 	 * @throws \RuntimeException on network or API errors
 	 */
 	public function shorten(string $message, ?int $segments = null): array;
