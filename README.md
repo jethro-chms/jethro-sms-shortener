@@ -141,11 +141,21 @@ cp cloudflare.config.example.ts cloudflare.config.ts
 Set the route pattern and zone, and `API_KEYS` to the URL shortener's KV
 namespace id. `cloudflare.config.ts` is gitignored.
 
-### 3. Set the bootstrap key and deploy
+### 3. Deploy with the bootstrap key
+
+A Worker that doesn't exist yet can't have secrets set in advance, so the
+first deploy supplies `API_KEY` from a file (delete it afterwards):
 
 ```bash
-npx cf workers secrets update API_KEY
-npx cf deploy
+(umask 077; echo "API_KEY=$(openssl rand -hex 24)" > .secrets.deploy)
+npx cf deploy --secrets-file .secrets.deploy
+rm .secrets.deploy
+```
+
+Later deploys are plain `npx cf deploy`. To change the key:
+
+```bash
+npx cf workers secrets update API_KEY --worker sms-shortener --type secret_text --text "<new key>"
 ```
 
 ## Tests
