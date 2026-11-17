@@ -32,10 +32,15 @@ interface SmsShortener
 
 class JethroAuSmsShortener implements SmsShortener
 {
+	/**
+	 * @param int $timeout seconds for the whole request. Rewordings usually take
+	 *        2-6 s; a hung service must not tie up a PHP worker for long, as callers
+	 *        such as Jethro's composer may make one request per typing pause.
+	 */
 	public function __construct(
 		private string $apiKey,
 		private string $endpoint = 'https://jethro.au/api/sms-shorten',
-		private int $timeout = 20,
+		private int $timeout = 12,
 	) {}
 
 	public function shorten(string $message, ?int $segments = null, ?float $maxCut = null): array
@@ -50,6 +55,8 @@ class JethroAuSmsShortener implements SmsShortener
 			CURLOPT_HTTPHEADER => ["Authorization: Bearer {$this->apiKey}", 'Content-Type: application/json'],
 			CURLOPT_POSTFIELDS => json_encode($payload),
 			CURLOPT_TIMEOUT => $this->timeout,
+			// An unreachable service fails in seconds rather than the full timeout.
+			CURLOPT_CONNECTTIMEOUT => min(3, $this->timeout),
 		]);
 		$body = curl_exec($ch);
 		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

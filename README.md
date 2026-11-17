@@ -160,7 +160,7 @@ if ($r['fits']) echo $r['message'];
 `SMSSHORTENER` is `jethroau` (= `https://jethro.au`, the default when
 undefined) or the base URL of a self-hosted Worker. `smsShortenerConfig()`
 interprets it. `shorten()` throws `RuntimeException` on network and API
-errors; its timeout is 20 seconds.
+errors; it gives up after 12 seconds (3 seconds to connect).
 
 ## Quick start
 
