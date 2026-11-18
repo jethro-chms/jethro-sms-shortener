@@ -25,7 +25,7 @@ export const PRIVACY_PATH = '/sms-shortener/privacy';
  * change the text, this date and that policyVersion together (and raise its
  * minPolicyVersion too if the change is material, so organisations agree again).
  */
-export const POLICY_VERSION = '2026-11-18';
+export const POLICY_VERSION = '2026-11-19';
 
 /** '2026-11-18' → '18 November 2026'. */
 function longDate(isoDate) {
@@ -101,8 +101,8 @@ Don't use the feature for messages containing information you would not share wi
 <h2>Who runs this service</h2>
 <p>The SMS shortener at jethro.au is operated by ${operator}. Questions, requests and complaints about privacy:
 ${contact}.</p>
-<p>It is optional. It only works once a Jethro administrator has registered your installation's jethro.au API key
-and someone has agreed, on behalf of your organisation, to the terms on this page. Its source code is public:
+<p>It is optional. It only works once your Jethro site has a jethro.au API key and your organisation has agreed to
+the terms on this page. Its source code is public:
 <a href="https://github.com/jethro-chms/jethro-sms-shortener">github.com/jethro-chms/jethro-sms-shortener</a>.</p>
 
 <h2>What is sent, and when</h2>
@@ -149,22 +149,39 @@ used if they choose <em>Use instead?</em>; the SMS is then sent by your own SMS 
 
 <h2>Registration and agreement</h2>
 <p>The SMS shortener uses your installation's jethro.au API key, which is shared with the other jethro.au services
-such as the URL shortener. Registering the key stores it (as a one-way hash), the email address and Google, GitHub or
-email account you signed in with, and your organisation's name as given by Jethro. Sign-in links sent by email are
-delivered through the email service Resend.</p>
-<p>Using the SMS shortener also requires your organisation's agreement to this page, given by someone who signs in at
-jethro.au and ticks "I agree" on the organisation's behalf. jethro.au records who agreed (their email address and
-sign-in account), when, and which version of this page (its "last updated" date). The record is kept with the API key
-until the agreement is withdrawn or the key is revoked.</p>
+such as the URL shortener. The key is stored as a one-way hash, with your organisation's name and how it was
+registered:</p>
+<ul>
+  <li><strong>Self-registered:</strong> a Jethro administrator signed in at jethro.au with Google, GitHub or an emailed
+    sign-in link (delivered through the email service Resend). jethro.au stores their email address and sign-in
+    account.</li>
+  <li><strong>Through a hosting provider:</strong> the provider that runs your Jethro site obtained the key for you
+    with its own provider key, and nobody signed in at jethro.au. jethro.au stores which provider issued it and the
+    tenant id the provider uses for your site.</li>
+</ul>
+<p>Using the SMS shortener also requires your organisation's agreement to this page. jethro.au records when it was
+given, which version of this page was agreed to (its "last updated" date), and who agreed:</p>
+<ul>
+  <li>for a self-registered key, the person who signed in at jethro.au and ticked "I agree" on the organisation's
+    behalf (their email address and sign-in account);</li>
+  <li>for a key issued through a hosting provider, your site's system administrator who ticked "I agree" in the
+    Jethro site the provider hosts: their name and email address, as vouched for by the provider, and which provider
+    vouched for them.</li>
+</ul>
+<p>The record is kept with the API key until the agreement is withdrawn or the key is revoked. A hosting provider
+that issued your key can list the keys it issued with their organisation names and agreements, record or withdraw
+agreements, and revoke the keys.</p>
 
 <h2>Your choices</h2>
 <ul>
   <li>People writing SMSes can simply ignore suggestions, but the text has already been sent by then.</li>
   <li>Administrators can turn the feature off by withdrawing the organisation's agreement to it (from Jethro's System
-    Configuration, or with <code>DELETE /api/consents/sms-shortener</code> at jethro.au). The API key keeps working
-    for the other jethro.au services your organisation has agreed to.</li>
-  <li><em>Deregister</em> in Jethro revokes the jethro.au API key, with its sign-in details and record of agreements,
-    which turns off every jethro.au service. You can also ask us to do this.</li>
+    Configuration, with <code>DELETE /api/consents/sms-shortener</code> at jethro.au, or through your hosting
+    provider if it issued your key). The API key keeps working for the other jethro.au services your organisation
+    has agreed to.</li>
+  <li><em>Deregister</em> in Jethro revokes the jethro.au API key, with its registration details and record of
+    agreements, which turns off every jethro.au service. A hosting provider can do the same for a key it issued, and
+    you can also ask us to do this.</li>
   <li>Organisations that send sensitive information by SMS (pastoral care, health, safeguarding) should consider
     leaving the feature off.</li>
 </ul>

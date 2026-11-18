@@ -396,11 +396,14 @@ async function runUnitTests() {
     ]) assert(html.includes(needle), `mentions ${needle}`);
   });
 
-  await test('the privacy page is dated by its policy version and describes the agreement record', async () => {
+  await test('the privacy page is dated by its policy version and describes both kinds of agreement record', async () => {
     const html = await (await privacy()).text();
-    assert(POLICY_VERSION === '2026-11-18', 'POLICY_VERSION matches the jethro.au registry');
-    assert(html.includes('Last updated 18 November 2026.'), 'date');
-    assert(html.includes('records who agreed') && html.includes('DELETE /api/consents/sms-shortener'), 'agreement');
+    assert(POLICY_VERSION === '2026-11-19', 'POLICY_VERSION matches the jethro.au registry');
+    assert(html.includes('Last updated 19 November 2026.'), 'date');
+    assert(html.includes('DELETE /api/consents/sms-shortener'), 'withdrawal');
+    assert(html.includes('Self-registered') && html.includes('signed in at jethro.au and ticked'), 'self-service agreement');
+    assert(html.includes('Through a hosting provider') && html.includes('as vouched for by the provider'), 'vouched agreement');
+    assert(html.includes('can list the keys it issued'), 'provider powers');
   });
 
   await test('the privacy page names the model actually configured', async () => {
